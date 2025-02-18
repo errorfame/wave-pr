@@ -1,7 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import Database
-from keyboards import get_admin_keyboard, get_admin_panel_keyboard, get_vacancies_keyboard, get_main_keyboard
+from keyboards import (
+    get_admin_keyboard, get_admin_panel_keyboard,
+    get_back_to_edit_keyboard, get_edit_vacancy_keyboard,
+    get_cancel_edit_keyboard, get_main_keyboard
+)
 from utils.decorators import admin_only
 import messages
 from utils.logger import log_message
@@ -27,7 +31,7 @@ def get_vacancy_edit_keyboard(vacancy_id: int, is_active: bool) -> InlineKeyboar
             ),
             InlineKeyboardButton(
                 text="📄 Изменить описание",
-                callback_data=f"edit_desc_{vacancy_id}"
+                callback_data=f"edit_description_{vacancy_id}"
             )
         ],
         # Вторая строка: статус и удаление
@@ -60,25 +64,27 @@ async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = Database()
     vacancies = db.get_active_vacancies()
     
-    # Создаем клавиатуру с вакансиями
+    # Создаем клавиатуру с вакансиями по 2 в строку
     keyboard = []
     row = []
     for i, vacancy in enumerate(vacancies, 1):
+        status = "🟢" if vacancy.is_active else "🔴"
         row.append(
             InlineKeyboardButton(
-                text=vacancy.title,
+                f"{status} {vacancy.title}",
                 callback_data=f"vacancy_{vacancy.id}"
             )
         )
         
-        if i % 2 == 0 or i == len(vacancies):
+        # После каждых двух кнопок или в конце списка создаем новую строку
+        if len(row) == 2 or i == len(vacancies):
             keyboard.append(row)
             row = []
     
     # Добавляем кнопку управления
     keyboard.append([
         InlineKeyboardButton(
-            text="⚙️ Управление",
+            "⚙️ Управление",
             callback_data="admin_panel"
         )
     ])
@@ -88,7 +94,7 @@ async def admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if vacancies:
         message_text += "\n\n📋 *Доступные вакансии:*"
     else:
-        message_text += "\n\n❗️ *Нет активных вакансий*"
+        message_text += "\n\n❗️ *Нет активных вакансий*\n\nСоздайте новую вакансию в панели управления."
     
     # Отправляем сообщение с основной клавиатурой и инлайн-кнопками
     await update.message.reply_text(
@@ -132,139 +138,154 @@ async def show_vacancies_for_edit(update: Update, context: ContextTypes.DEFAULT_
     
     if not vacancies:
         await query.message.edit_text(
-            "Нет доступных вакансий для редактирования.",
+            "❌ *Нет доступных вакансий*\n\nСоздайте новую вакансию, нажав кнопку ниже.",
             reply_markup=get_admin_panel_keyboard(),
             parse_mode='Markdown'
         )
         return
     
-    # Создаем клавиатуру с вакансиями по две в строку
+    # Создаем клавиатуру для вакансий по 2 в строку
     keyboard = []
     row = []
     for i, vacancy in enumerate(vacancies, 1):
-        status_emoji = "✅" if vacancy.is_active else "❌"
+        status = "🟢" if vacancy.is_active else "🔴"
         row.append(
             InlineKeyboardButton(
-                text=f"{status_emoji} {vacancy.title}",
+                f"{status} {vacancy.title}",
                 callback_data=f"edit_vacancy_{vacancy.id}"
             )
         )
         
-        if i % 2 == 0 or i == len(vacancies):
+        # После каждых двух кнопок или в конце списка создаем новую строку
+        if len(row) == 2 or i == len(vacancies):
             keyboard.append(row)
             row = []
     
+    # Добавляем кнопку возврата
     keyboard.append([
         InlineKeyboardButton(
-            text="↩️ Назад",
+            "« Назад в панель управления",
             callback_data="admin_panel"
         )
     ])
     
     await query.message.edit_text(
-        messages.EDIT_VACANCIES_LIST,
+        "*Управление вакансиями*\n\n"
+        "Выберите вакансию для редактирования:\n"
+        "🟢 - активная вакансия\n"
+        "🔴 - неактивная вакансия",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
 
 @admin_only
 async def edit_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню редактирования выбранной вакансии"""
+    """Показывает меню редактирования вакансии"""
     query = update.callback_query
     await query.answer()
     
-    vacancy_id = int(query.data.split('_')[2])
     user = update.effective_user
+    vacancy_id = int(query.data.split('_')[2])
     
     db = Database()
     vacancy = db.get_vacancy(vacancy_id)
     
     if not vacancy:
         await query.message.edit_text(
-            "Вакансия не найдена.",
-            reply_markup=get_admin_panel_keyboard(),
+            "❌ Вакансия не найдена.",
+            reply_markup=get_back_to_edit_keyboard(),
             parse_mode='Markdown'
         )
         return
     
-    log_message(user.id, user.username or "Unknown", "edit", "Начал редактирование вакансии", f"Вакансия: {vacancy.title}")
+    log_message(user.id, user.username or "Unknown", "admin", "Открыл редактирование вакансии", f"ID: {vacancy_id}")
     
-    status = "Активная ✅" if vacancy.is_active else "Неактивная ❌"
-    await query.message.edit_text(
-        messages.EDIT_VACANCY.format(
-            title=vacancy.title,
-            status=status,
-            description=vacancy.description
+    # Создаем клавиатуру для редактирования по 2 кнопки в строку
+    keyboard = []
+    
+    # Первая строка: название и описание
+    keyboard.append([
+        InlineKeyboardButton(
+            "✏️ Изменить название",
+            callback_data=f"edit_title_{vacancy_id}"
         ),
-        reply_markup=get_vacancy_edit_keyboard(vacancy_id, vacancy.is_active),
+        InlineKeyboardButton(
+            "📝 Изменить описание",
+            callback_data=f"edit_description_{vacancy_id}"
+        )
+    ])
+    
+    # Вторая строка: статус и удаление
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔄 Изменить статус" if vacancy.is_active else "🔄 Активировать",
+            callback_data=f"toggle_status_{vacancy_id}"
+        ),
+        InlineKeyboardButton(
+            "❌ Удалить",
+            callback_data=f"delete_vacancy_{vacancy_id}"
+        )
+    ])
+    
+    # Третья строка: кнопка назад
+    keyboard.append([
+        InlineKeyboardButton(
+            "« Назад к списку",
+            callback_data="edit_vacancies"
+        )
+    ])
+    
+    status = "🟢 Активна" if vacancy.is_active else "🔴 Не активна"
+    
+    await query.message.edit_text(
+        f"*Редактирование вакансии*\n\n"
+        f"*Название:* {vacancy.title}\n"
+        f"*Статус:* {status}\n\n"
+        f"*Описание:*\n{vacancy.description}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
 
 @admin_only
 async def toggle_vacancy_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключает статус активности вакансии"""
+    """Изменяет статус вакансии"""
     query = update.callback_query
     await query.answer()
     
-    vacancy_id = int(query.data.split('_')[2])
     user = update.effective_user
+    vacancy_id = int(query.data.split('_')[2])
     
     db = Database()
     vacancy = db.get_vacancy(vacancy_id)
     
     if not vacancy:
         await query.message.edit_text(
-            "Вакансия не найдена.",
+            "❌ Вакансия не найдена.",
+            reply_markup=get_back_to_edit_keyboard(),
             parse_mode='Markdown'
         )
         return
     
-    # Переключаем статус
+    # Меняем статус на противоположный
     new_status = not vacancy.is_active
-    db.update_vacancy(vacancy_id, is_active=new_status)
-    
-    status_text = "активировал" if new_status else "деактивировал"
-    log_message(
-        user.id,
-        user.username or "Unknown",
-        "edit",
-        f"{status_text} вакансию",
-        f"Вакансия: {vacancy.title}"
-    )
-    
-    # Обновляем сообщение с новым статусом
-    status = "Активная ✅" if new_status else "Неактивная ❌"
-    await query.message.edit_text(
-        messages.EDIT_VACANCY.format(
-            title=vacancy.title,
-            status=status,
-            description=vacancy.description
-        ),
-        reply_markup=get_vacancy_edit_keyboard(vacancy_id, new_status),
-        parse_mode='Markdown'
-    )
-
-@admin_only
-async def delete_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаляет вакансию"""
-    query = update.callback_query
-    await query.answer()
-    
-    vacancy_id = int(query.data.split('_')[2])
-    user = update.effective_user
-    
-    db = Database()
-    vacancy = db.get_vacancy(vacancy_id)
-    log_message(user.id, user.username or "Unknown", "deleted vacancy", f"Vacancy: {vacancy.title}")
-    
-    # Помечаем вакансию как неактивную вместо полного удаления
-    db.update_vacancy(vacancy_id, is_active=False)
-    
-    await query.message.edit_text(
-        messages.VACANCY_DELETED,
-        reply_markup=get_admin_panel_keyboard(),
-        parse_mode='Markdown'
-    )
+    if db.update_vacancy_status(vacancy_id, new_status):
+        status_text = "активирована" if new_status else "деактивирована"
+        log_message(
+            user.id,
+            user.username or "Unknown",
+            "admin",
+            f"Изменил статус вакансии",
+            f"ID: {vacancy_id}, Новый статус: {status_text}"
+        )
+        
+        # Возвращаемся к редактированию вакансии
+        await edit_vacancy(update, context)
+    else:
+        await query.message.edit_text(
+            "❌ Не удалось изменить статус вакансии.",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
 
 @admin_only
 async def start_add_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -335,22 +356,14 @@ async def start_edit_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     vacancy_id = int(query.data.split('_')[2])
-    db = Database()
-    vacancy = db.get_vacancy(vacancy_id)
-    
-    if not vacancy:
-        await query.message.edit_text("Вакансия не найдена.", parse_mode='Markdown')
-        return ConversationHandler.END
-    
-    context.user_data['editing_vacancy_id'] = vacancy_id
+    context.user_data['editing_vacancy'] = vacancy_id
     
     await query.message.edit_text(
-        messages.ENTER_NEW_TITLE.format(current_title=vacancy.title),
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Отмена", callback_data=f"cancel_edit_{vacancy_id}")
-        ]]),
+        "Введите новое название вакансии:",
+        reply_markup=get_cancel_edit_keyboard(vacancy_id),
         parse_mode='Markdown'
     )
+    
     return EDIT_TITLE
 
 @admin_only
@@ -360,76 +373,90 @@ async def start_edit_description(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     
     vacancy_id = int(query.data.split('_')[2])
-    db = Database()
-    vacancy = db.get_vacancy(vacancy_id)
-    
-    if not vacancy:
-        await query.message.edit_text("Вакансия не найдена.", parse_mode='Markdown')
-        return ConversationHandler.END
-    
-    context.user_data['editing_vacancy_id'] = vacancy_id
+    context.user_data['editing_vacancy'] = vacancy_id
     
     await query.message.edit_text(
-        messages.ENTER_NEW_DESCRIPTION.format(current_description=vacancy.description),
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("Отмена", callback_data=f"cancel_edit_{vacancy_id}")
-        ]]),
+        "Введите новое описание вакансии:",
+        reply_markup=get_cancel_edit_keyboard(vacancy_id),
         parse_mode='Markdown'
     )
+    
     return EDIT_DESCRIPTION
 
 @admin_only
 async def process_edit_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает новое название вакансии"""
-    vacancy_id = context.user_data.get('editing_vacancy_id')
+    user = update.effective_user
+    vacancy_id = context.user_data.get('editing_vacancy')
+    new_title = update.message.text
+    
     if not vacancy_id:
         await update.message.reply_text(
-            "Произошла ошибка. Попробуйте начать редактирование заново.",
+            "❌ Ошибка: не найдена редактируемая вакансия",
+            reply_markup=get_back_to_edit_keyboard(),
             parse_mode='Markdown'
         )
         return ConversationHandler.END
     
-    new_title = update.message.text
     db = Database()
-    db.update_vacancy(vacancy_id, title=new_title)
-    vacancy = db.get_vacancy(vacancy_id)
+    if db.update_vacancy(vacancy_id=vacancy_id, title=new_title):
+        log_message(
+            user.id,
+            user.username or "Unknown",
+            "admin",
+            "Изменил название вакансии",
+            f"ID: {vacancy_id}, Новое название: {new_title}"
+        )
+        await update.message.reply_text(
+            "✅ Название вакансии успешно обновлено!",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Не удалось обновить название вакансии",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
     
-    await update.message.reply_text(
-        messages.VACANCY_UPDATED.format(
-            title=vacancy.title,
-            status="Активная ✅" if vacancy.is_active else "Неактивная ❌",
-            description=vacancy.description
-        ),
-        reply_markup=get_vacancy_edit_keyboard(vacancy_id, vacancy.is_active),
-        parse_mode='Markdown'
-    )
     return ConversationHandler.END
 
 @admin_only
 async def process_edit_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает новое описание вакансии"""
-    vacancy_id = context.user_data.get('editing_vacancy_id')
+    user = update.effective_user
+    vacancy_id = context.user_data.get('editing_vacancy')
+    new_description = update.message.text
+    
     if not vacancy_id:
         await update.message.reply_text(
-            "Произошла ошибка. Попробуйте начать редактирование заново.",
+            "❌ Ошибка: не найдена редактируемая вакансия",
+            reply_markup=get_back_to_edit_keyboard(),
             parse_mode='Markdown'
         )
         return ConversationHandler.END
     
-    new_description = update.message.text
     db = Database()
-    db.update_vacancy(vacancy_id, description=new_description)
-    vacancy = db.get_vacancy(vacancy_id)
+    if db.update_vacancy(vacancy_id=vacancy_id, description=new_description):
+        log_message(
+            user.id,
+            user.username or "Unknown",
+            "admin",
+            "Изменил описание вакансии",
+            f"ID: {vacancy_id}"
+        )
+        await update.message.reply_text(
+            "✅ Описание вакансии успешно обновлено!",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Не удалось обновить описание вакансии",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
     
-    await update.message.reply_text(
-        messages.VACANCY_UPDATED.format(
-            title=vacancy.title,
-            status="Активная ✅" if vacancy.is_active else "Неактивная ❌",
-            description=vacancy.description
-        ),
-        reply_markup=get_vacancy_edit_keyboard(vacancy_id, vacancy.is_active),
-        parse_mode='Markdown'
-    )
     return ConversationHandler.END
 
 @admin_only
@@ -438,19 +465,15 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    vacancy_id = int(query.data.split('_')[2])
-    db = Database()
-    vacancy = db.get_vacancy(vacancy_id)
+    if 'editing_vacancy' in context.user_data:
+        del context.user_data['editing_vacancy']
     
     await query.message.edit_text(
-        messages.EDIT_VACANCY.format(
-            title=vacancy.title,
-            status="Активная ✅" if vacancy.is_active else "Неактивная ❌",
-            description=vacancy.description
-        ),
-        reply_markup=get_vacancy_edit_keyboard(vacancy_id, vacancy.is_active),
+        "❌ Редактирование отменено",
+        reply_markup=get_back_to_edit_keyboard(),
         parse_mode='Markdown'
     )
+    
     return ConversationHandler.END
 
 @admin_only
@@ -569,3 +592,45 @@ async def process_application_response(update: Update, context: ContextTypes.DEF
         ),
         parse_mode='Markdown'
     )
+
+@admin_only
+async def delete_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет вакансию"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    vacancy_id = int(query.data.split('_')[2])
+    
+    db = Database()
+    vacancy = db.get_vacancy(vacancy_id)
+    
+    if not vacancy:
+        await query.message.edit_text(
+            "❌ Вакансия не найдена.",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Удаляем вакансию
+    if db.delete_vacancy(vacancy_id):
+        log_message(
+            user.id,
+            user.username or "Unknown",
+            "admin",
+            "Удалил вакансию",
+            f"ID: {vacancy_id}, Название: {vacancy.title}"
+        )
+        
+        await query.message.edit_text(
+            f"✅ Вакансия *{vacancy.title}* успешно удалена.",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await query.message.edit_text(
+            "❌ Не удалось удалить вакансию.",
+            reply_markup=get_back_to_edit_keyboard(),
+            parse_mode='Markdown'
+        )

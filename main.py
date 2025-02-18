@@ -1,11 +1,56 @@
-import logging
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+from telegram.error import TelegramError
+import logging
 from config import load_config
 from handlers import user_handlers, admin_handlers
 from database import Database
 from utils.logger import logger, log_message
+from utils.rate_limiter import RateLimiter
+from datetime import datetime
+from keyboards import get_main_keyboard
+
+# Создаем глобальный rate limiter
+rate_limiter = RateLimiter(
+    messages_per_minute=20,  # максимум сообщений в минуту
+    max_similar_messages=5,   # максимум одинаковых сообщений подряд
+    block_duration_minutes=5  # длительность блокировки
+)
+
+async def check_rate_limit(update: Update) -> bool:
+    """Проверяет ограничения отправки сообщений"""
+    user = update.effective_user
+    message_text = update.message.text if update.message else ""
+    
+    can_send, error_message = rate_limiter.can_send_message(user.id, message_text)
+    if not can_send:
+        try:
+            await update.message.reply_text(error_message)
+        except TelegramError:
+            pass
+        log_message(user.id, user.username or "Unknown", "spam", "Сработала защита от спама", error_message)
+        return False
+    return True
+
+async def message_handler_with_spam_protection(update: Update, context: ContextTypes.DEFAULT_TYPE, handler):
+    """Обертка для обработчиков сообщений с защитой от спама"""
+    if not await check_rate_limit(update):
+        return
+    return await handler(update, context)
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик ошибок"""
+    user = update.effective_user if update else None
+    if user:
+        log_message(
+            user.id,
+            user.username or "Unknown",
+            "error",
+            "Произошла ошибка в боте",
+            str(context.error)
+        )
+    else:
+        logger.error(f"Произошла ошибка: {str(context.error)}")
 
 def main():
     # Загрузка конфигурации
@@ -21,19 +66,11 @@ def main():
     logging.getLogger('telegram').setLevel(logging.ERROR)
     logging.getLogger('telegram.ext.conversationhandler').setLevel(logging.ERROR)
     
-    # Регистрация обработчиков текстовых команд
-    application.add_handler(MessageHandler(
-        filters.Regex('^📋 Вакансии$'),
-        user_handlers.show_vacancies
-    ))
-    application.add_handler(MessageHandler(
-        filters.Regex('^📝 Мои заявки$'),
-        user_handlers.show_applications
-    ))
-    application.add_handler(MessageHandler(
-        filters.Regex('^ℹ️ О боте$'),
-        user_handlers.show_about
-    ))
+    # Регистрация основных обработчиков команд
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("about", user_handlers.show_about))
+    application.add_handler(CommandHandler("vacancies", user_handlers.show_vacancies))
+    application.add_handler(CommandHandler("applications", user_handlers.show_applications))
     
     # Обработчик добавления вакансии для админов
     add_vacancy_conv = ConversationHandler(
@@ -62,26 +99,9 @@ def main():
                 admin_handlers.show_admin_panel,
                 pattern=r'^admin_panel$'
             )
-        ]
-    )
-    
-    # Обработчик отклика на вакансию
-    apply_vacancy_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(
-                user_handlers.apply_to_vacancy,
-                pattern=r'^apply_\d+$'
-            )
         ],
-        states={
-            user_handlers.AWAITING_APPLICATION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    user_handlers.process_application
-                )
-            ]
-        },
-        fallbacks=[]
+        per_chat=True,
+        per_user=True
     )
     
     # Обработчик редактирования вакансий
@@ -93,7 +113,7 @@ def main():
             ),
             CallbackQueryHandler(
                 admin_handlers.start_edit_description,
-                pattern=r'^edit_desc_\d+$'
+                pattern=r'^edit_description_\d+$'
             )
         ],
         states={
@@ -114,30 +134,59 @@ def main():
             CallbackQueryHandler(
                 admin_handlers.cancel_edit,
                 pattern=r'^cancel_edit_\d+$'
+            ),
+            CallbackQueryHandler(
+                admin_handlers.edit_vacancy,
+                pattern=r'^edit_vacancy_\d+$'
             )
-        ]
+        ],
+        per_chat=True,
+        per_user=True
     )
     
-    # Регистрация основных обработчиков
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("about", user_handlers.show_about))
-    application.add_handler(CommandHandler("vacancies", user_handlers.show_vacancies))
-    application.add_handler(CommandHandler("applications", user_handlers.show_applications))
+    # Обработчик отклика на вакансию
+    apply_vacancy_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                user_handlers.apply_to_vacancy,
+                pattern=r'^apply_\d+$'
+            )
+        ],
+        states={
+            user_handlers.AWAITING_APPLICATION: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    user_handlers.process_application
+                )
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(
+                user_handlers.back_to_vacancies,
+                pattern=r'^back_to_vacancies$'
+            )
+        ],
+        per_chat=True,
+        per_user=True
+    )
     
-    # Регистрация обработчиков диалогов
+    # Регистрация обработчиков диалогов (должны быть перед общими обработчиками)
     application.add_handler(add_vacancy_conv)
     application.add_handler(apply_vacancy_conv)
     application.add_handler(edit_vacancy_conv)
     
-    # Обработчики кнопок
-    application.add_handler(CallbackQueryHandler(
-        user_handlers.show_vacancy,
-        pattern=r'^vacancy_\d+$'
-    ))
-    application.add_handler(CallbackQueryHandler(
-        user_handlers.back_to_vacancies,
-        pattern=r'^back_to_vacancies$'
-    ))
+    # Регистрация обработчиков текстовых команд меню
+    for pattern, handler in [
+        ('^📋 Вакансии$', user_handlers.show_vacancies),
+        ('^📝 Мои заявки$', user_handlers.show_applications),
+        ('^ℹ️ О боте$', user_handlers.show_about)
+    ]:
+        application.add_handler(MessageHandler(
+            filters.Regex(pattern),
+            lambda u, c, h=handler: message_handler_with_spam_protection(u, c, h)
+        ))
+    
+    # Обработчики callback кнопок для админа
     application.add_handler(CallbackQueryHandler(
         admin_handlers.show_admin_panel,
         pattern=r'^admin_panel$'
@@ -167,32 +216,29 @@ def main():
         pattern=r'^application_(accept|reject)_\d+$'
     ))
     
-    # Обработчик неизвестных команд (должен быть последним)
+    # Обработчики callback кнопок для пользователя
+    application.add_handler(CallbackQueryHandler(
+        user_handlers.show_vacancy,
+        pattern=r'^vacancy_\d+$'
+    ))
+    application.add_handler(CallbackQueryHandler(
+        user_handlers.back_to_vacancies,
+        pattern=r'^back_to_vacancies$'
+    ))
+    
+    # Обработчик неизвестных команд (должен быть после всех команд)
     application.add_handler(MessageHandler(
         filters.COMMAND,
         user_handlers.unknown_command
     ))
     
-    # Обработчик неизвестных сообщений
+    # Обработчик неизвестных сообщений (должен быть последним)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
-        user_handlers.handle_text
+        lambda u, c: message_handler_with_spam_protection(u, c, user_handlers.handle_text)
     ))
     
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработчик ошибок"""
-        user = update.effective_user if update else None
-        if user:
-            log_message(
-                user.id,
-                user.username or "Unknown",
-                "error",
-                "Произошла ошибка в боте",
-                str(context.error)
-            )
-        else:
-            logger.error(f"Произошла ошибка: {str(context.error)}")
-
+    # Добавляем обработчик ошибок
     application.add_error_handler(error_handler)
     
     logger.info(str({

@@ -1,6 +1,8 @@
 import sqlite3
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
+import re
+from contextlib import contextmanager
 
 @dataclass
 class Vacancy:
@@ -22,10 +24,27 @@ class Database:
     def __init__(self, db_path: str = "bot_database.db"):
         self.db_path = db_path
         self._create_tables()
-
+    
+    @contextmanager
+    def get_connection(self):
+        """Безопасное получение соединения с базой данных"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
+    
+    def _sanitize_input(self, text: str) -> str:
+        """Очищает входные данные от потенциально опасных символов"""
+        if not isinstance(text, str):
+            return ""
+        # Удаляем специальные символы и ограничиваем длину
+        text = re.sub(r'[^\w\s\-.,!?@()\'\"]+', '', text)
+        return text[:1000]  # Ограничиваем длину текста
+    
     def _create_tables(self):
         """Создание необходимых таблиц"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self.get_connection() as conn:
             cursor = conn.cursor()
             # Таблица администраторов
             cursor.execute("""
@@ -41,7 +60,8 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
-                    is_active BOOLEAN NOT NULL DEFAULT 1
+                    is_active BOOLEAN NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             # Таблица откликов на вакансии
@@ -59,92 +79,161 @@ class Database:
             """)
             conn.commit()
 
-    def add_vacancy(self, title: str, description: str) -> int:
-        """Добавление новой вакансии"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO vacancies (title, description) VALUES (?, ?)",
-                (title, description)
-            )
-            conn.commit()
-            return cursor.lastrowid
+    def add_admin(self, user_id: int, username: str) -> bool:
+        """Добавляет администратора"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT OR IGNORE INTO admins (user_id, username) VALUES (?, ?)",
+                    (user_id, self._sanitize_input(username))
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
+
+    def add_vacancy(self, title: str, description: str) -> Optional[int]:
+        """Добавляет вакансию"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Сохраняем текст как есть, без санитизации
+                cursor.execute(
+                    "INSERT INTO vacancies (title, description) VALUES (?, ?)",
+                    (title, description)
+                )
+                conn.commit()
+                return cursor.lastrowid
+        except sqlite3.Error:
+            return None
+
+    def update_vacancy(self, vacancy_id: int, title: str = None, description: str = None, is_active: bool = None) -> bool:
+        """Обновляет информацию о вакансии"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Собираем параметры для обновления
+                updates = []
+                values = []
+                
+                if title is not None:
+                    updates.append("title = ?")
+                    values.append(self._sanitize_input(title))
+                
+                if description is not None:
+                    updates.append("description = ?")
+                    values.append(self._sanitize_input(description))
+                
+                if is_active is not None:
+                    updates.append("is_active = ?")
+                    values.append(is_active)
+                
+                if not updates:
+                    return False
+                
+                # Добавляем ID вакансии в конец значений
+                values.append(vacancy_id)
+                
+                # Формируем и выполняем запрос
+                query = f"UPDATE vacancies SET {', '.join(updates)} WHERE id = ?"
+                cursor.execute(query, values)
+                conn.commit()
+                
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
 
     def get_vacancy(self, vacancy_id: int) -> Optional[Vacancy]:
-        """Получение вакансии по ID"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, title, description, is_active FROM vacancies WHERE id = ?",
-                (vacancy_id,)
-            )
-            result = cursor.fetchone()
-            if result:
-                return Vacancy(*result)
+        """Получает информацию о вакансии"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, title, description, is_active FROM vacancies WHERE id = ?",
+                    (vacancy_id,)
+                )
+                result = cursor.fetchone()
+                if result:
+                    # Возвращаем текст как есть, без изменений
+                    return Vacancy(*result)
+                return None
+        except sqlite3.Error:
             return None
 
     def get_active_vacancies(self) -> List[Vacancy]:
-        """Получение списка активных вакансий"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, title, description, is_active FROM vacancies WHERE is_active = 1"
-            )
-            return [Vacancy(*row) for row in cursor.fetchall()]
+        """Получает список активных вакансий"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, title, description, is_active FROM vacancies WHERE is_active = 1"
+                )
+                return [Vacancy(*row) for row in cursor.fetchall()]
+        except sqlite3.Error:
+            return []
 
     def get_all_vacancies(self) -> List[Vacancy]:
-        """Получение списка всех вакансий"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, title, description, is_active FROM vacancies"
-            )
-            return [Vacancy(*row) for row in cursor.fetchall()]
+        """Получает список всех вакансий для администратора"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, title, description, is_active 
+                    FROM vacancies 
+                    ORDER BY created_at DESC
+                """)
+                return [Vacancy(*row) for row in cursor.fetchall()]
+        except sqlite3.Error:
+            return []
 
-    def update_vacancy(self, vacancy_id: int, title: str = None, description: str = None, is_active: bool = None):
-        """Обновление информации о вакансии"""
-        updates = []
-        values = []
-        if title is not None:
-            updates.append("title = ?")
-            values.append(title)
-        if description is not None:
-            updates.append("description = ?")
-            values.append(description)
-        if is_active is not None:
-            updates.append("is_active = ?")
-            values.append(is_active)
+    def toggle_vacancy_status(self, vacancy_id: int) -> bool:
+        """Переключает статус активности вакансии"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE vacancies SET is_active = NOT is_active WHERE id = ?",
+                    (vacancy_id,)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
 
-        if not updates:
-            return
+    def update_vacancy_status(self, vacancy_id: int, is_active: bool) -> bool:
+        """Обновляет статус вакансии"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE vacancies SET is_active = ? WHERE id = ?",
+                    (is_active, vacancy_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
 
-        values.append(vacancy_id)
-        query = f"UPDATE vacancies SET {', '.join(updates)} WHERE id = ?"
-
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(query, values)
-            conn.commit()
-
-    def can_apply_to_vacancy(self, user_id: int, vacancy_id: int) -> bool:
-        """Проверяет, может ли пользователь откликнуться на вакансию"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            # Проверяем последний отклик пользователя на эту вакансию
-            cursor.execute("""
-                SELECT applied_at 
-                FROM applications 
-                WHERE user_id = ? AND vacancy_id = ? 
-                AND datetime(applied_at, '+24 hours') > datetime('now')
-            """, (user_id, vacancy_id))
-            
-            result = cursor.fetchone()
-            return result is None
+    def delete_vacancy(self, vacancy_id: int) -> bool:
+        """Удаляет вакансию"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Сначала удаляем все отклики на эту вакансию
+                cursor.execute("DELETE FROM applications WHERE vacancy_id = ?", (vacancy_id,))
+                # Затем удаляем саму вакансию
+                cursor.execute("DELETE FROM vacancies WHERE id = ?", (vacancy_id,))
+                conn.commit()
+                return cursor.rowcount > 0
+        except sqlite3.Error:
+            return False
 
     def add_application(self, user_id: int, vacancy_id: int) -> Optional[int]:
-        """Добавляет отклик на вакансию и возвращает его ID"""
+        """Добавляет отклик на вакансию"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "INSERT INTO applications (user_id, vacancy_id) VALUES (?, ?)",
@@ -155,79 +244,97 @@ class Database:
         except sqlite3.IntegrityError:
             return None
 
-    def is_admin(self, user_id: int) -> bool:
-        """Проверяет, является ли пользователь администратором"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
-            return cursor.fetchone() is not None
-
-    def add_admin(self, user_id: int, username: str = None) -> bool:
-        """Добавляет нового администратора"""
+    def update_application_status(self, application_id: int, status: str, feedback: str = None) -> bool:
+        """Обновляет статус отклика"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO admins (user_id, username) VALUES (?, ?)",
-                    (user_id, username)
-                )
+                if feedback:
+                    cursor.execute(
+                        "UPDATE applications SET status = ?, feedback = ? WHERE id = ?",
+                        (status, self._sanitize_input(feedback), application_id)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE applications SET status = ? WHERE id = ?",
+                        (status, application_id)
+                    )
                 conn.commit()
-                return True
-        except sqlite3.IntegrityError:
+                return cursor.rowcount > 0
+        except sqlite3.Error:
             return False
 
-    def remove_admin(self, user_id: int) -> bool:
-        """Удаляет администратора"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
-            conn.commit()
-            return cursor.rowcount > 0
-
     def get_application(self, application_id: int) -> Optional[Application]:
-        """Получает информацию об отклике по ID"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, user_id, vacancy_id, status, applied_at, feedback
-                FROM applications WHERE id = ?
-            """, (application_id,))
-            result = cursor.fetchone()
-            if result:
-                return Application(*result)
+        """Получает информацию об отклике"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, user_id, vacancy_id, status, applied_at, feedback
+                    FROM applications WHERE id = ?
+                """, (application_id,))
+                result = cursor.fetchone()
+                return Application(*result) if result else None
+        except sqlite3.Error:
             return None
 
-    def update_application_status(self, application_id: int, status: str, feedback: str = None):
-        """Обновляет статус отклика"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            if feedback:
-                cursor.execute(
-                    "UPDATE applications SET status = ?, feedback = ? WHERE id = ?",
-                    (status, feedback, application_id)
-                )
-            else:
-                cursor.execute(
-                    "UPDATE applications SET status = ? WHERE id = ?",
-                    (status, application_id)
-                )
-            conn.commit()
-
     def get_user_applications(self, user_id: int) -> List[tuple]:
-        """Получает список откликов пользователя с информацией о вакансиях"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT 
-                    v.title,
-                    v.description,
-                    a.applied_at,
-                    v.is_active,
-                    a.status,
-                    a.feedback
-                FROM applications a
-                JOIN vacancies v ON v.id = a.vacancy_id
-                WHERE a.user_id = ?
-                ORDER BY a.applied_at DESC
-            """, (user_id,))
-            return cursor.fetchall()
+        """Получает список откликов пользователя"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        v.title,
+                        v.description,
+                        a.applied_at,
+                        v.is_active,
+                        a.status,
+                        a.feedback
+                    FROM applications a
+                    JOIN vacancies v ON v.id = a.vacancy_id
+                    WHERE a.user_id = ?
+                    ORDER BY a.applied_at DESC
+                """, (user_id,))
+                return cursor.fetchall()
+        except sqlite3.Error:
+            return []
+
+    def can_apply_to_vacancy(self, user_id: int, vacancy_id: int) -> bool:
+        """Проверяет, может ли пользователь откликнуться на вакансию"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                # Проверяем, не отправлял ли пользователь отклик в последние 24 часа
+                cursor.execute("""
+                    SELECT applied_at 
+                    FROM applications 
+                    WHERE user_id = ? AND vacancy_id = ? 
+                    AND datetime(applied_at, '+24 hours') > datetime('now')
+                """, (user_id, vacancy_id))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    return False  # Уже отправлял отклик недавно
+                
+                # Проверяем, активна ли вакансия
+                cursor.execute(
+                    "SELECT is_active FROM vacancies WHERE id = ?",
+                    (vacancy_id,)
+                )
+                vacancy = cursor.fetchone()
+                
+                return vacancy is not None and vacancy[0]
+        except sqlite3.Error:
+            return False
+
+    def is_admin(self, user_id: int) -> bool:
+        """Проверяет, является ли пользователь администратором"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 FROM admins WHERE user_id = ?", (user_id,))
+                return cursor.fetchone() is not None
+        except sqlite3.Error:
+            return False

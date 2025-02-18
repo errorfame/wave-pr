@@ -50,15 +50,13 @@ def get_vacancy_actions_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_back_to_list_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру с кнопкой возврата к списку вакансий"""
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                text="↩️ К списку вакансий",
-                callback_data="back_to_vacancies"
-            )
-        ]
-    ]
+    """Клавиатура для возврата к списку вакансий"""
+    keyboard = [[
+        InlineKeyboardButton(
+            "« Назад к списку",
+            callback_data="back_to_vacancies"
+        )
+    ]]
     return InlineKeyboardMarkup(keyboard)
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
@@ -74,27 +72,37 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_admin_panel_keyboard() -> InlineKeyboardMarkup:
-    """Создает клавиатуру панели управления"""
+    """Клавиатура панели администратора"""
     keyboard = [
         [
             InlineKeyboardButton(
-                text="➕ Добавить вакансию",
+                "📝 Добавить вакансию",
                 callback_data="add_vacancy"
             )
         ],
         [
             InlineKeyboardButton(
-                text="📝 Редактировать вакансии",
+                "📋 Редактировать вакансии",
                 callback_data="edit_vacancies"
             )
         ],
         [
             InlineKeyboardButton(
-                text="↩️ Назад",
+                "« Вернуться в меню",
                 callback_data="back_to_main"
             )
         ]
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_back_to_edit_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для возврата к списку вакансий"""
+    keyboard = [[
+        InlineKeyboardButton(
+            "« Назад к списку вакансий",
+            callback_data="edit_vacancies"
+        )
+    ]]
     return InlineKeyboardMarkup(keyboard)
 
 def get_back_to_main_keyboard() -> InlineKeyboardMarkup:
@@ -107,4 +115,30 @@ def get_back_to_main_keyboard() -> InlineKeyboardMarkup:
             )
         ]
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_edit_vacancy_keyboard(vacancy_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для редактирования вакансии"""
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "✏️ Изменить название",
+                callback_data=f"edit_title_{vacancy_id}"
+            ),
+            InlineKeyboardButton(
+                "📝 Изменить описание",
+                callback_data=f"edit_description_{vacancy_id}"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_cancel_edit_keyboard(vacancy_id: int):
+    """Клавиатура для отмены редактирования"""
+    keyboard = [[
+        InlineKeyboardButton(
+            "❌ Отменить",
+            callback_data=f"cancel_edit_{vacancy_id}"
+        )
+    ]]
     return InlineKeyboardMarkup(keyboard)

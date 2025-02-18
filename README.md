@@ -69,7 +69,6 @@ INSERT INTO admins (user_id, username) VALUES (user_telegram_id, 'username');
 
 ### Команды бота
 - `/start` - Начало работы с ботом
-- `/help` - Получить справку
 - Используйте встроенную клавиатуру для навигации
 
 ### Управление вакансиями (для админов)
@@ -85,5 +84,4 @@ INSERT INTO admins (user_id, username) VALUES (user_telegram_id, 'username');
 MIT License - подробности в файле [LICENSE](LICENSE)
 
 ## 👥 Авторы
-- [@yourusername](https://github.com/yourusername) - Разработка
 - Wave Project Team - Идея и поддержка

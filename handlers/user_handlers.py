@@ -21,18 +21,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = Database()
     vacancies = db.get_active_vacancies()
     
-    # Создаем клавиатуру с вакансиями
+    # Создаем клавиатуру с вакансиями по 2 в строку
     keyboard = []
     row = []
     for i, vacancy in enumerate(vacancies, 1):
+        status = "🟢" if vacancy.is_active else "🔴"
         row.append(
             InlineKeyboardButton(
-                text=vacancy.title,
+                f"{status} {vacancy.title}",
                 callback_data=f"vacancy_{vacancy.id}"
             )
         )
         
-        if i % 2 == 0 or i == len(vacancies):
+        # После каждых двух кнопок или в конце списка создаем новую строку
+        if len(row) == 2 or i == len(vacancies):
             keyboard.append(row)
             row = []
     
@@ -61,45 +63,71 @@ async def show_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    vacancy_id = int(query.data.split('_')[1])
     user = update.effective_user
+    vacancy_id = int(query.data.split('_')[1])
+    
+    log_message(user.id, user.username or "Unknown", "view", "Просмотрел вакансию", f"ID: {vacancy_id}")
     
     db = Database()
     vacancy = db.get_vacancy(vacancy_id)
     
     if not vacancy:
         await query.message.edit_text(
-            "Вакансия не найдена.",
+            "❌ Вакансия не найдена или была удалена.",
             parse_mode='Markdown'
         )
         return
     
-    log_message(user.id, user.username or "Unknown", "view", "Просмотрел вакансию", f"Вакансия: {vacancy.title}")
-    
     # Проверяем, может ли пользователь откликнуться
     can_apply = db.can_apply_to_vacancy(user.id, vacancy_id)
     
-    message_text = messages.VACANCY_DETAILS.format(
-        title=vacancy.title,
-        description=vacancy.description
-    )
+    # Создаем клавиатуру
+    keyboard = []
+    row = []
     
-    if not can_apply:
-        message_text += "\n\n" + messages.ALREADY_APPLIED
-        keyboard = InlineKeyboardMarkup([[
+    # Кнопка "Откликнуться" только если можно
+    if can_apply and vacancy.is_active:
+        row.append(
             InlineKeyboardButton(
-                text="Назад к списку",
-                callback_data="back_to_vacancies"
+                "💼 Откликнуться",
+                callback_data=f"apply_{vacancy_id}"
             )
-        ]])
-    else:
-        keyboard = get_vacancy_actions_keyboard(vacancy_id)
+        )
     
-    await query.message.edit_text(
-        message_text,
-        reply_markup=keyboard,
-        parse_mode='Markdown'
+    # Кнопка "Назад" всегда добавляется
+    row.append(
+        InlineKeyboardButton(
+            "« Назад к списку",
+            callback_data="back_to_vacancies"
+        )
     )
+    
+    keyboard.append(row)
+    
+    # Формируем статусное сообщение
+    if not vacancy.is_active:
+        status_text = "\n\n❌ *Вакансия закрыта*"
+    elif not can_apply:
+        status_text = "\n\n⏳ *Вы уже откликались на эту вакансию*\nПовторный отклик будет доступен через 24 часа."
+    else:
+        status_text = ""
+    
+    try:
+        await query.message.edit_text(
+            vacancy.description + (status_text if status_text else ""),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        log_message(user.id, user.username or "Unknown", "error", "Ошибка при показе вакансии", str(e))
+        # Если возникла ошибка с форматированием, отправляем без него
+        await query.message.edit_text(
+            vacancy.description.replace('*', '') + 
+            (status_text.replace('*', '') if status_text else ""),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад к списку", callback_data="back_to_vacancies")
+            ]])
+        )
 
 async def apply_to_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка отклика на вакансию"""
