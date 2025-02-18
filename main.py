@@ -92,6 +92,16 @@ def main():
                     filters.TEXT & ~filters.COMMAND,
                     admin_handlers.process_vacancy_description
                 )
+            ],
+            admin_handlers.AWAITING_IMAGE: [
+                MessageHandler(
+                    filters.PHOTO,
+                    admin_handlers.process_vacancy_image
+                ),
+                CallbackQueryHandler(
+                    admin_handlers.skip_image,
+                    pattern=r'^skip_image$'
+                )
             ]
         },
         fallbacks=[

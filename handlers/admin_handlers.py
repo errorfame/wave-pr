@@ -18,6 +18,7 @@ EDIT_DESCRIPTION = 2
 # Состояния для добавления вакансии
 AWAITING_TITLE = 1
 AWAITING_DESCRIPTION = 2
+AWAITING_IMAGE = 3
 
 def get_vacancy_edit_keyboard(vacancy_id: int, is_active: bool) -> InlineKeyboardMarkup:
     """Создает клавиатуру для редактирования вакансии"""
@@ -289,64 +290,120 @@ async def toggle_vacancy_status(update: Update, context: ContextTypes.DEFAULT_TY
 
 @admin_only
 async def start_add_vacancy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало процесса добавления вакансии"""
+    """Начинает процесс добавления вакансии"""
     query = update.callback_query
     await query.answer()
     
-    user = update.effective_user
-    log_message(user.id, user.username or "Unknown", "admin", "Начал создание вакансии")
-    
     await query.message.edit_text(
-        "*Создание новой вакансии*\n\n"
-        "Введите название вакансии.\n"
-        "Например: Python Developer, Project Manager и т.д.",
+        "Введите название новой вакансии:",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("Отмена", callback_data="admin_panel")
         ]]),
         parse_mode='Markdown'
     )
+    
     return AWAITING_TITLE
 
 @admin_only
 async def process_vacancy_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка названия вакансии"""
-    user = update.effective_user
-    title = update.message.text
-    log_message(user.id, user.username or "Unknown", "edit", "Ввел название вакансии", f"Название: {title}")
+    """Обрабатывает название вакансии"""
+    context.user_data['new_vacancy_title'] = update.message.text
     
-    context.user_data['new_vacancy_title'] = title
     await update.message.reply_text(
-        "*Отлично! Теперь введите описание вакансии.*\n\n"
-        "Рекомендуемая структура:\n"
-        "• Обязанности\n"
-        "• Требования\n"
-        "• Условия\n"
-        "• Зарплата\n\n"
-        "Используйте разделители и списки для лучшей читаемости.",
+        "Введите описание вакансии:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Отмена", callback_data="admin_panel")
+        ]]),
         parse_mode='Markdown'
     )
+    
     return AWAITING_DESCRIPTION
 
 @admin_only
 async def process_vacancy_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка описания вакансии и сохранение вакансии"""
-    user = update.effective_user
-    title = context.user_data['new_vacancy_title']
-    description = update.message.text
-    
-    db = Database()
-    vacancy_id = db.add_vacancy(title, description)
-    vacancy = db.get_vacancy(vacancy_id)
-    
-    log_message(user.id, user.username or "Unknown", "edit", "Создал новую вакансию", f"Название: {title}")
+    """Обрабатывает описание вакансии"""
+    context.user_data['new_vacancy_description'] = update.message.text
     
     await update.message.reply_text(
-        f"✅ *Вакансия успешно создана!*\n\n"
-        f"📋 *{vacancy.title}*\n\n"
-        f"{vacancy.description}",
-        reply_markup=get_admin_panel_keyboard(),
+        "Отправьте изображение для вакансии или нажмите 'Пропустить':",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Пропустить", callback_data="skip_image"),
+            InlineKeyboardButton("Отмена", callback_data="admin_panel")
+        ]]),
         parse_mode='Markdown'
     )
+    
+    return AWAITING_IMAGE
+
+@admin_only
+async def process_vacancy_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает изображение вакансии"""
+    user = update.effective_user
+    title = context.user_data.get('new_vacancy_title')
+    description = context.user_data.get('new_vacancy_description')
+    
+    if not title or not description:
+        await update.message.reply_text(
+            "Произошла ошибка. Попробуйте создать вакансию заново.",
+            parse_mode='Markdown'
+        )
+        return ConversationHandler.END
+    
+    image_id = None
+    if update.message.photo:
+        # Берем последнее фото (самое большое разрешение)
+        image_id = update.message.photo[-1].file_id
+    
+    db = Database()
+    if db.add_vacancy(title, description, image_id):
+        log_message(user.id, user.username or "Unknown", "admin", "Создал новую вакансию", f"Название: {title}")
+        await update.message.reply_text(
+            "✅ Вакансия успешно создана!",
+            reply_markup=get_admin_panel_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "❌ Не удалось создать вакансию. Попробуйте позже.",
+            reply_markup=get_admin_panel_keyboard(),
+            parse_mode='Markdown'
+        )
+    
+    return ConversationHandler.END
+
+@admin_only
+async def skip_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пропускает добавление изображения"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    title = context.user_data.get('new_vacancy_title')
+    description = context.user_data.get('new_vacancy_description')
+    
+    if not title or not description:
+        await query.message.edit_text(
+            "Произошла ошибка. Попробуйте создать вакансию заново.",
+            reply_markup=get_admin_panel_keyboard(),
+            parse_mode='Markdown'
+        )
+        return ConversationHandler.END
+    
+    db = Database()
+    if db.add_vacancy(title, description):
+        log_message(user.id, user.username or "Unknown", "admin", "Создал новую вакансию", f"Название: {title}")
+        await query.message.edit_text(
+            "✅ Вакансия успешно создана!",
+            reply_markup=get_admin_panel_keyboard(),
+            parse_mode='Markdown'
+        )
+    else:
+        await query.message.edit_text(
+            "❌ Не удалось создать вакансию. Попробуйте позже.",
+            reply_markup=get_admin_panel_keyboard(),
+            parse_mode='Markdown'
+        )
+    
     return ConversationHandler.END
 
 @admin_only

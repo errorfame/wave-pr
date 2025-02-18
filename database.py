@@ -10,6 +10,7 @@ class Vacancy:
     title: str
     description: str
     is_active: bool = True
+    image_id: Optional[str] = None
 
 @dataclass
 class Application:
@@ -61,6 +62,7 @@ class Database:
                     title TEXT NOT NULL,
                     description TEXT NOT NULL,
                     is_active BOOLEAN NOT NULL DEFAULT 1,
+                    image_id TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -93,22 +95,21 @@ class Database:
         except sqlite3.Error:
             return False
 
-    def add_vacancy(self, title: str, description: str) -> Optional[int]:
+    def add_vacancy(self, title: str, description: str, image_id: str = None) -> Optional[int]:
         """Добавляет вакансию"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-                # Сохраняем текст как есть, без санитизации
                 cursor.execute(
-                    "INSERT INTO vacancies (title, description) VALUES (?, ?)",
-                    (title, description)
+                    "INSERT INTO vacancies (title, description, image_id) VALUES (?, ?, ?)",
+                    (title, description, image_id)
                 )
                 conn.commit()
                 return cursor.lastrowid
         except sqlite3.Error:
             return None
 
-    def update_vacancy(self, vacancy_id: int, title: str = None, description: str = None, is_active: bool = None) -> bool:
+    def update_vacancy(self, vacancy_id: int, title: str = None, description: str = None, is_active: bool = None, image_id: str = None) -> bool:
         """Обновляет информацию о вакансии"""
         try:
             with self.get_connection() as conn:
@@ -129,6 +130,10 @@ class Database:
                 if is_active is not None:
                     updates.append("is_active = ?")
                     values.append(is_active)
+                
+                if image_id is not None:
+                    updates.append("image_id = ?")
+                    values.append(image_id)
                 
                 if not updates:
                     return False
@@ -151,7 +156,7 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT id, title, description, is_active FROM vacancies WHERE id = ?",
+                    "SELECT id, title, description, is_active, image_id FROM vacancies WHERE id = ?",
                     (vacancy_id,)
                 )
                 result = cursor.fetchone()
@@ -168,7 +173,7 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT id, title, description, is_active FROM vacancies WHERE is_active = 1"
+                    "SELECT id, title, description, is_active, image_id FROM vacancies WHERE is_active = 1"
                 )
                 return [Vacancy(*row) for row in cursor.fetchall()]
         except sqlite3.Error:
@@ -180,7 +185,7 @@ class Database:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT id, title, description, is_active 
+                    SELECT id, title, description, is_active, image_id 
                     FROM vacancies 
                     ORDER BY created_at DESC
                 """)
