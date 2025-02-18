@@ -1,0 +1,9 @@
+<<<<<<< HEAD
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+colorlog==6.7.0
+=======
+python-telegram-bot>=20.0
+environs>=9.0
+colorama>=0.4.6
+>>>>>>> 6e5d6b1683c29844fc813883a7cb7f1687fe3d8e
